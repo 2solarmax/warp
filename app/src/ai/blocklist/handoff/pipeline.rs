@@ -339,7 +339,12 @@ impl PendingHandoff {
         self.config.model_id = Some(model_id);
     }
 
-    fn set_valid_environment_ids(&mut self, valid_environment_ids: HashSet<SyncId>) {
+    /// Refreshes the environment identities accepted by [`Self::validate`].
+    ///
+    /// Frontends with a live environment catalog call this while presenting
+    /// editable handoff configuration.
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    pub fn refresh_valid_environment_ids(&mut self, valid_environment_ids: HashSet<SyncId>) {
         self.valid_environment_ids = valid_environment_ids;
     }
 
@@ -661,7 +666,7 @@ pub fn execute_handoff(
     materialize_handoff_target: Option<MaterializeHandoffTarget>,
     ctx: &AppContext,
 ) -> Pin<Box<dyn Future<Output = HandoffCommitOutcome> + Send>> {
-    pending.set_valid_environment_ids(
+    pending.refresh_valid_environment_ids(
         CloudAmbientAgentEnvironment::get_all(ctx)
             .into_iter()
             .map(|environment| environment.id)
