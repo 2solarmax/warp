@@ -13,8 +13,9 @@ use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, BlockPadding, BlocklistAIHistoryModel, ConversationStatus,
     ConversationUsageTotals, Harness, LLMPreferences, LongRunningCommandControlState, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TranscriptScope, UserTakeOverReason,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TranscriptScope, TuiUpArrowHistoryItemKind,
+    UserTakeOverReason, export_conversation_markdown, register_tui_session_view_test_singletons,
+    slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -1354,6 +1355,68 @@ fn submit_is_blocked_during_bootstrap_and_allowed_at_prompt() {
             view.input_target().agent_editor_owns_input()
         }));
         assert!(TuiInputTarget::AgentEditor.agent_editor_owns_input());
+    });
+}
+
+#[test]
+fn accepted_command_history_executes_through_the_shell_submission_path() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let executed = Rc::new(RefCell::new(Vec::new()));
+        app.update(|ctx| {
+            let executed = executed.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if let TuiTerminalSessionEvent::ExecuteCommand(event) = event {
+                    executed.borrow_mut().push(event.command.clone());
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_accepted_prompt_and_command_history(
+                "echo from history".to_owned(),
+                TuiUpArrowHistoryItemKind::Command {
+                    linked_workflow_data: None,
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(executed.borrow().as_slice(), &["echo from history"]);
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+    });
+}
+
+#[test]
+fn accepted_prompt_history_submits_to_the_selected_ai_conversation() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_accepted_prompt_and_command_history(
+                "explain the build".to_owned(),
+                TuiUpArrowHistoryItemKind::Prompt,
+                ctx,
+            );
+        });
+
+        view.read(&app, |view, ctx| {
+            let queries = view
+                .conversation_selection
+                .as_ref(ctx)
+                .selected_conversation(ctx)
+                .expect("selected conversation")
+                .latest_exchange()
+                .expect("accepted prompt should append an exchange")
+                .input
+                .iter()
+                .filter_map(|input| input.user_query())
+                .collect::<Vec<_>>();
+            assert_eq!(queries, vec!["explain the build"]);
+        });
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
     });
 }
 
