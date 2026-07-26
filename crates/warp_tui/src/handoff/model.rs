@@ -13,13 +13,12 @@ use parking_lot::FairMutex;
 use warp::settings::{AISettings, PrivacySettings, PrivacySettingsChangedEvent};
 use warp::tui_export::{
     AIConversationId, AISettingsChangedEvent, AttachmentInput, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryModel, CancellationReason, CloudEnvironmentCatalog,
-    HandoffCommitOutcome, HandoffEntryPoint, HandoffLaunchAttachments, HandoffPrepareError,
-    HandoffPrepareInput, HandoffRestoration, HandoffSurface, LLMId, LLMPreferences,
-    LLMPreferencesEvent, OptionRow, OptionSnapshot, OptionSourceStatus, PendingCloudLaunch,
-    PendingHandoff, ServerApiProvider, SnapshotUploadTarget, TerminalModel, UserWorkspaces,
-    UserWorkspacesEvent, execute_handoff, oz_model_snapshot, prepare_handoff,
-    suggest_handoff_environment,
+    BlocklistAIController, BlocklistAIHistoryModel, CloudEnvironmentCatalog, HandoffCommitOutcome,
+    HandoffEntryPoint, HandoffLaunchAttachments, HandoffPrepareError, HandoffPrepareInput,
+    HandoffRestoration, HandoffSurface, LLMId, LLMPreferences, LLMPreferencesEvent, OptionRow,
+    OptionSnapshot, OptionSourceStatus, PendingCloudLaunch, PendingHandoff, ServerApiProvider,
+    SnapshotUploadTarget, TerminalModel, UserWorkspaces, UserWorkspacesEvent, execute_handoff,
+    oz_model_snapshot, prepare_handoff, suggest_handoff_environment,
 };
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _};
 
@@ -136,26 +135,23 @@ impl TuiHandoffModel {
         };
         let provider = ServerApiProvider::as_ref(ctx);
         let pending = prepare_handoff(
-            HandoffPrepareInput {
+            HandoffPrepareInput::new(
                 terminal_surface_id,
-                expected_conversation_id: source_conversation_id,
                 history,
                 controller,
                 context,
-                current_working_directory: current_working_directory.clone(),
-                snapshot_target: SnapshotUploadTarget::Local {
+                SnapshotUploadTarget::Local {
                     ai_client: provider.get_ai_client(),
                     http: provider.get_http_client(),
                 },
-                has_long_running_command,
-                launch: Some(launch),
-                environment_id: None,
-                environment_required: true,
-                entry_point: HandoffEntryPoint::SlashCommand,
-                surface: HandoffSurface::Tui,
-                cancellation_reason: CancellationReason::ManuallyCancelled,
-                require_in_progress_source: false,
-            },
+                HandoffEntryPoint::SlashCommand,
+                HandoffSurface::Tui,
+            )
+            .with_expected_conversation_id(source_conversation_id)
+            .with_current_working_directory(current_working_directory.clone())
+            .with_long_running_command(has_long_running_command)
+            .with_launch(Some(launch))
+            .with_environment_required(true),
             ctx,
         )
         .map_err(|error| Self::preparation_failure(error, source_was_active, argument.as_ref()))?;
@@ -567,6 +563,11 @@ impl TuiHandoffModel {
                             "Couldn't start the handoff. Check your network connection and try again."
                                 .to_owned(),
                     });
+                    ctx.notify();
+                }
+                HandoffCommitOutcome::Cancelled => {
+                    model.dismissed = true;
+                    ctx.emit(TuiHandoffModelEvent::Cancelled(None));
                     ctx.notify();
                 }
                 HandoffCommitOutcome::Created(created) => {
