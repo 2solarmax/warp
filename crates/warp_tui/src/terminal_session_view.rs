@@ -852,9 +852,7 @@ impl TuiTerminalSessionView {
             BlockingInputSource::AskQuestion(view) => ctx.focus(&view),
             BlockingInputSource::Permission(view) => ctx.focus(&view),
             BlockingInputSource::Orchestration(view) => ctx.focus(&view),
-            BlockingInputSource::Handoff(view) => {
-                view.update(ctx, |view, ctx| view.focus(ctx));
-            }
+            BlockingInputSource::Handoff(view) => ctx.focus(&view),
         }
     }
 

@@ -21,7 +21,8 @@ use warpui_core::elements::tui::{
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, FixedBinding};
 use warpui_core::{
-    AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
+    AppContext, Entity, EntityId, FocusContext, ModelHandle, TuiView, TypedActionView, ViewContext,
+    ViewHandle,
 };
 
 use super::model::{
@@ -181,19 +182,9 @@ impl TuiHandoffBlock {
         if let TuiHandoffModelEvent::Changed { focus_block } = event {
             self.refresh_selector(ctx);
             if *focus_block {
-                self.focus(ctx);
+                ctx.focus_self();
             }
             ctx.notify();
-        }
-    }
-
-    pub(crate) fn focus(&self, ctx: &mut ViewContext<Self>) {
-        match self.model.as_ref(ctx).phase() {
-            TuiHandoffPhase::Configuring { .. } => ctx.focus(&self.selector),
-            TuiHandoffPhase::Acceptance
-            | TuiHandoffPhase::Committed { .. }
-            | TuiHandoffPhase::Created { .. }
-            | TuiHandoffPhase::Persisted { .. } => ctx.focus_self(),
         }
     }
 
@@ -558,6 +549,17 @@ impl TuiView for TuiHandoffBlock {
 
     fn child_view_ids(&self, _ctx: &AppContext) -> Vec<EntityId> {
         vec![self.selector.id()]
+    }
+
+    fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        if focus_ctx.is_self_focused()
+            && matches!(
+                self.model.as_ref(ctx).phase(),
+                TuiHandoffPhase::Configuring { .. }
+            )
+        {
+            ctx.focus(&self.selector);
+        }
     }
 
     fn keymap_context(&self, ctx: &AppContext) -> keymap::Context {
