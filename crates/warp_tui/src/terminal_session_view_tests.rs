@@ -6,8 +6,8 @@ use instant::Instant;
 use tempfile::TempDir;
 use warp::appearance::Appearance;
 use warp::settings::{
-    AISettings, TuiTheme, TuiThemeSettings, TuiUsageDisplayMode, TuiVoiceInputToggleKey,
-    TuiVoiceSettings, TuiZeroStateObject, VoiceInputToggleKey,
+    AISettings, TuiTheme, TuiThemeSettings, TuiUsageDisplayMode, TuiVoiceInputHoldKey,
+    TuiVoiceSettings, TuiZeroStateObject,
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
@@ -29,8 +29,9 @@ use warpui_core::elements::tui::{
     TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiPoint,
     TuiRect, TuiScene, TuiScreenPosition, TuiSize, TuiStyle, TuiText,
 };
-use warpui_core::event::ModifiersState;
+use warpui_core::event::{KeyEventDetails, KeyState, ModifiersState};
 use warpui_core::keymap::{Context, Keystroke, Trigger};
+use warpui_core::platform::keyboard::KeyCode;
 use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::telemetry::{EventPayload, flush_events};
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
@@ -1769,8 +1770,18 @@ fn footer_renders_voice_listening_and_transcribing_states() {
             vec!["listening to voice input... · esc or enter to stop"]
         );
         assert_eq!(listening_footer[(0, 0)].fg, expected_color);
+        view.update(&mut app, |view, ctx| {
+            view.voice_hold_active = Some(KeyCode::ControlLeft);
+            ctx.notify();
+        });
+        let held_footer = render_footer(&mut app, &view, 80);
+        assert_eq!(
+            held_footer.to_lines(),
+            vec!["listening to voice input... · release key to stop"]
+        );
 
         view.update(&mut app, |view, ctx| {
+            view.voice_hold_active = None;
             let voice_input = view.input_view.as_ref(ctx).voice_input_model().clone();
             voice_input.update(ctx, |voice, ctx| {
                 voice.set_state_for_test(TuiVoiceInputState::Transcribing, ctx);
@@ -2226,40 +2237,211 @@ fn auto_approve_uses_ctrl_shift_i() {
 }
 
 #[test]
-fn voice_input_configured_key_is_an_additional_trigger() {
+fn voice_hold_keys_preserve_left_and_right_modifiers() {
+    let cases = [
+        (TuiVoiceInputHoldKey::None, None),
+        (TuiVoiceInputHoldKey::AltLeft, Some(KeyCode::AltLeft)),
+        (TuiVoiceInputHoldKey::AltRight, Some(KeyCode::AltRight)),
+        (
+            TuiVoiceInputHoldKey::ControlLeft,
+            Some(KeyCode::ControlLeft),
+        ),
+        (
+            TuiVoiceInputHoldKey::ControlRight,
+            Some(KeyCode::ControlRight),
+        ),
+        (TuiVoiceInputHoldKey::SuperLeft, Some(KeyCode::SuperLeft)),
+        (TuiVoiceInputHoldKey::SuperRight, Some(KeyCode::SuperRight)),
+        (TuiVoiceInputHoldKey::ShiftLeft, Some(KeyCode::ShiftLeft)),
+        (TuiVoiceInputHoldKey::ShiftRight, Some(KeyCode::ShiftRight)),
+    ];
+    for (setting, modifier) in cases {
+        let converted: Option<KeyCode> = setting.into();
+        assert_eq!(converted, modifier);
+    }
+}
+
+fn voice_key_event(key: KeyCode, state: KeyState) -> TuiEvent {
+    let details = KeyEventDetails {
+        physical_key: Some(key),
+        ..Default::default()
+    };
+    match state {
+        KeyState::Pressed => TuiEvent::KeyDown {
+            keystroke: Keystroke::default(),
+            chars: String::new(),
+            details,
+            is_repeat: false,
+            is_composing: false,
+        },
+        KeyState::Released => TuiEvent::KeyUp {
+            keystroke: Keystroke::default(),
+            details,
+        },
+    }
+}
+
+fn voice_key_repeat(key: KeyCode) -> TuiEvent {
+    let mut event = voice_key_event(key, KeyState::Pressed);
+    let TuiEvent::KeyDown { is_repeat, .. } = &mut event else {
+        unreachable!();
+    };
+    *is_repeat = true;
+    event
+}
+#[test]
+fn voice_hold_handler_matches_only_the_configured_side() {
     App::test((), |mut app| async move {
-        register_tui_session_view_test_singletons(&mut app);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
         app.update(|ctx| {
             TuiVoiceSettings::handle(ctx).update(ctx, |settings, ctx| {
                 settings
-                    .voice_input_toggle_key
-                    .set_value(
-                        TuiVoiceInputToggleKey(VoiceInputToggleKey::ControlLeft),
-                        ctx,
-                    )
-                    .expect("voice key should update");
+                    .voice_input_hold_key
+                    .set_value(TuiVoiceInputHoldKey::ControlLeft, ctx)
+                    .expect("voice hold key should update");
             });
         });
-        app.update(crate::keybindings::init);
-        app.read(|ctx| {
-            let bindings = ctx
-                .editable_bindings()
-                .filter(|binding| binding.name == VOICE_INPUT_BINDING_NAME)
-                .collect::<Vec<_>>();
-            assert_eq!(bindings.len(), 2);
-            assert!(bindings.iter().any(|binding| {
-                *binding.trigger == Trigger::Keystrokes(vec![Keystroke::parse("ctrl-s").unwrap()])
-            }));
-            assert!(bindings.iter().any(|binding| {
-                *binding.trigger
-                    == Trigger::Keystrokes(vec![
-                        VoiceInputToggleKey::ControlLeft.keystroke().unwrap(),
-                    ])
-            }));
+        view.update(&mut app, |view, _| {
+            view.keyboard_enhancement_supported = true;
+        });
+        let (mut element, scene, _) = render_retained_session(&app, &view, 100, 40);
+
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &voice_key_event(KeyCode::ControlLeft, KeyState::Pressed),
+        ));
+        assert!(!dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &voice_key_event(KeyCode::ControlRight, KeyState::Released),
+        ));
+        assert!(!dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene,
+            &voice_key_repeat(KeyCode::ControlLeft),
+        ));
+    });
+}
+
+#[test]
+fn voice_hold_handler_keeps_release_after_composer_loses_input() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, _| {
+            view.keyboard_enhancement_supported = true;
+            view.voice_hold_active = Some(KeyCode::ControlLeft);
+        });
+        let (mut element, scene) = app.read(|ctx| {
+            let mut element =
+                view.as_ref(ctx)
+                    .with_voice_hold_handler(TuiText::new("").finish(), false, ctx);
+            let mut rendered_views = EntityIdMap::default();
+            let mut layout_ctx = TuiLayoutContext {
+                rendered_views: &mut rendered_views,
+            };
+            element.layout(
+                TuiConstraint::loose(TuiSize::new(1, 1)),
+                &mut layout_ctx,
+                ctx,
+            );
+            let mut buffer = TuiBuffer::empty(TuiRect::new(0, 0, 1, 1));
+            let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
+            {
+                let mut surface = TuiPaintSurface::new(&mut buffer);
+                element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
+            }
+            (element, Rc::new(paint_ctx.scene))
+        });
+
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &voice_key_event(KeyCode::ControlLeft, KeyState::Released),
+        ));
+        assert!(!dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene,
+            &voice_key_event(KeyCode::ControlLeft, KeyState::Pressed),
+        ));
+    });
+}
+
+#[test]
+fn voice_hold_release_stops_only_a_recording_started_by_the_hold() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            let voice_input = view.input_view.as_ref(ctx).voice_input_model().clone();
+            voice_input.update(ctx, |voice, ctx| {
+                voice.set_state_for_test(TuiVoiceInputState::Listening, ctx);
+            });
+
+            view.voice_hold_active = Some(KeyCode::ControlLeft);
+            view.toggle_voice_input(KeyCode::ControlLeft, KeyState::Released, ctx);
+            assert_eq!(view.voice_hold_active, None);
+            assert_eq!(
+                voice_input.as_ref(ctx).state(),
+                TuiVoiceInputState::Transcribing
+            );
+
+            voice_input.update(ctx, |voice, ctx| {
+                voice.set_state_for_test(TuiVoiceInputState::Listening, ctx);
+            });
+            view.toggle_voice_input(KeyCode::ControlLeft, KeyState::Released, ctx);
+            assert_eq!(
+                voice_input.as_ref(ctx).state(),
+                TuiVoiceInputState::Listening,
+                "a release without a successful hold-key press must not stop voice"
+            );
+            view.toggle_voice_input(KeyCode::ControlLeft, KeyState::Pressed, ctx);
+            assert_eq!(
+                view.voice_hold_active, None,
+                "pressing the hold key while voice is already active must not arm its release"
+            );
         });
     });
 }
 
+#[test]
+fn voice_hold_state_clears_when_recording_ends_by_another_path() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.voice_hold_active = Some(KeyCode::ControlLeft);
+            view.handle_voice_input_event(
+                &crate::voice_input::TuiVoiceInputEvent::StateChanged(TuiVoiceInputState::Idle),
+                ctx,
+            );
+            assert_eq!(view.voice_hold_active, None);
+
+            let voice_input = view.input_view.as_ref(ctx).voice_input_model().clone();
+            voice_input.update(ctx, |voice, ctx| {
+                voice.set_state_for_test(TuiVoiceInputState::Listening, ctx);
+            });
+            view.toggle_voice_input(KeyCode::ControlLeft, KeyState::Released, ctx);
+            assert_eq!(
+                voice_input.as_ref(ctx).state(),
+                TuiVoiceInputState::Listening,
+                "releasing a cancelled hold must not stop a later ctrl-s recording"
+            );
+        });
+    });
+}
 #[test]
 fn blocked_terminal_use_action_acceptance_uses_ctrl_enter_without_rebinding_submit() {
     App::test((), |mut app| async move {

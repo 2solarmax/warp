@@ -1,48 +1,61 @@
-use serde::{Deserialize, Serialize};
 use settings::macros::define_settings_group;
 use settings::{SupportedPlatforms, SyncToCloud};
+#[cfg(feature = "tui")]
+use warpui_core::platform::keyboard::KeyCode;
 
-use super::ai::VoiceInputToggleKey;
-
-/// The voice-input key setting used by the headless TUI.
-///
-/// This transparent wrapper reuses the GUI enum's TOML value space while
-/// allowing the settings system to register a second, TUI-only setting group.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct TuiVoiceInputToggleKey(pub VoiceInputToggleKey);
-
-impl settings_value::SettingsValue for TuiVoiceInputToggleKey {}
-
-impl TuiVoiceInputToggleKey {
-    pub fn keystroke(self) -> Option<warpui::keymap::Keystroke> {
-        self.0.keystroke()
-    }
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename_all = "snake_case")]
+pub enum TuiVoiceInputHoldKey {
+    #[default]
+    None,
+    AltLeft,
+    AltRight,
+    ControlLeft,
+    ControlRight,
+    SuperLeft,
+    SuperRight,
+    ShiftLeft,
+    ShiftRight,
 }
 
-impl From<VoiceInputToggleKey> for TuiVoiceInputToggleKey {
-    fn from(value: VoiceInputToggleKey) -> Self {
-        Self(value)
-    }
-}
-
-impl From<TuiVoiceInputToggleKey> for VoiceInputToggleKey {
-    fn from(value: TuiVoiceInputToggleKey) -> Self {
-        value.0
+#[cfg(feature = "tui")]
+impl From<TuiVoiceInputHoldKey> for Option<KeyCode> {
+    fn from(key: TuiVoiceInputHoldKey) -> Self {
+        match key {
+            TuiVoiceInputHoldKey::None => None,
+            TuiVoiceInputHoldKey::AltLeft => Some(KeyCode::AltLeft),
+            TuiVoiceInputHoldKey::AltRight => Some(KeyCode::AltRight),
+            TuiVoiceInputHoldKey::ControlLeft => Some(KeyCode::ControlLeft),
+            TuiVoiceInputHoldKey::ControlRight => Some(KeyCode::ControlRight),
+            TuiVoiceInputHoldKey::SuperLeft => Some(KeyCode::SuperLeft),
+            TuiVoiceInputHoldKey::SuperRight => Some(KeyCode::SuperRight),
+            TuiVoiceInputHoldKey::ShiftLeft => Some(KeyCode::ShiftLeft),
+            TuiVoiceInputHoldKey::ShiftRight => Some(KeyCode::ShiftRight),
+        }
     }
 }
 
 define_settings_group!(TuiVoiceSettings, settings: [
-    voice_input_toggle_key: TuiVoiceInputToggleKeySetting {
-        type: TuiVoiceInputToggleKey,
-        default: TuiVoiceInputToggleKey::default(),
+    voice_input_hold_key: TuiVoiceInputHoldKeySetting {
+        type: TuiVoiceInputHoldKey,
+        default: TuiVoiceInputHoldKey::default(),
         supported_platforms: SupportedPlatforms::DESKTOP,
         sync_to_cloud: SyncToCloud::Never,
         surface: settings::SettingSurfaces::TUI,
         private: false,
-        toml_path: "agents.voice.voice_input_toggle_key",
-        description: "An additional key that starts voice input in the Warp Agent CLI. The hardcoded ctrl-s binding remains; tap to start and press Escape or Enter to stop. Defaults to none. Fn is unsupported and Super may be unavailable in some terminals.",
+        toml_path: "agents.voice.voice_input_hold_key",
+        description: "The modifier key held to record voice input in the Warp Agent CLI. The hardcoded ctrl-s binding remains available. Defaults to none. Super may be unavailable in some terminals.",
     },
 ]);
 

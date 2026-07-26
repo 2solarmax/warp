@@ -46,15 +46,17 @@ use warp_editor::model::CoreEditorModel;
 use warp_errors::report_error;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
+use warpui::event::KeyState;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{
-    TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
-    TuiSize, TuiStyle, TuiText,
+    TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiDispatchEventResult, TuiElement,
+    TuiEvent, TuiEventHandler, TuiFlex, TuiHoverable, TuiSize, TuiStyle, TuiText,
 };
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
 use warpui_core::platform::TerminationMode;
+use warpui_core::platform::keyboard::KeyCode;
 use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
 };
@@ -554,7 +556,9 @@ pub(crate) enum TuiTerminalSessionAction {
     /// picker (the same menu `/model` surfaces).
     ToggleModelMenu,
     /// Toggle per-conversation auto approve.
-    ToggleAutoApprove { show_feedback: bool },
+    ToggleAutoApprove {
+        show_feedback: bool,
+    },
     /// Raw user bytes to forward to the foreground PTY process.
     ForwardUserPtyBytes(Vec<u8>),
     /// Ctrl-d while the prompt is focused: exit the TUI immediately when the
@@ -578,6 +582,10 @@ pub(crate) enum TuiTerminalSessionAction {
     PasteFromClipboard,
     /// Start recording voice input from the session composer.
     StartVoiceInput,
+    ToggleVoiceInput {
+        key: KeyCode,
+        state: KeyState,
+    },
 }
 
 /// The authenticated terminal/session surface rendered inside [`RootTuiView`].
@@ -613,6 +621,7 @@ pub(crate) struct TuiTerminalSessionView {
     /// Armed by a ctrl-c press; a second press while armed exits the TUI.
     /// The footer shows [`CTRL_C_EXIT_HINT`] while armed.
     exit_confirmation: ExitConfirmation,
+    voice_hold_active: Option<KeyCode>,
     /// Credits⇄cost display state for the footer's clickable usage entry.
     usage_toggle: UsageToggle,
     /// Last-response exchanges whose completed summary has been hidden with
@@ -683,9 +692,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_group(TUI_BINDING_GROUP),
     ]);
-    // Keep ctrl-s as the backwards-compatible baseline. The setting-driven
-    // binding below is intentionally separate so configuring a modifier adds
-    // a trigger instead of removing the existing hotkey.
+
     let voice_input_binding = EditableBinding::new(
         VOICE_INPUT_BINDING_NAME,
         "Start voice input",
@@ -695,30 +702,8 @@ pub(crate) fn init(app: &mut AppContext) {
         (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
             & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
     )
-    .with_group(TUI_BINDING_GROUP);
-    let mut configured_voice_input_binding = EditableBinding::new(
-        VOICE_INPUT_BINDING_NAME,
-        "Start voice input",
-        TuiTerminalSessionAction::StartVoiceInput,
-    )
-    .with_context_predicate(
-        (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-            & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
-    )
-    .with_group(TUI_BINDING_GROUP);
-    let configured_voice_key = app
-        .has_singleton_model::<TuiVoiceSettings>()
-        .then(|| {
-            TuiVoiceSettings::as_ref(app)
-                .voice_input_toggle_key
-                .value()
-                .keystroke()
-        })
-        .flatten();
-    if let Some(keystroke) = configured_voice_key {
-        configured_voice_input_binding = configured_voice_input_binding.with_keystroke(keystroke);
-    }
-    let voice_input_binding = voice_input_binding.with_key_binding("ctrl-s");
+    .with_group(TUI_BINDING_GROUP)
+    .with_key_binding("ctrl-s");
 
     app.register_editable_bindings([
         EditableBinding::new(
@@ -796,7 +781,6 @@ pub(crate) fn init(app: &mut AppContext) {
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-shift-V"),
         voice_input_binding,
-        configured_voice_input_binding,
         #[cfg(windows)]
         EditableBinding::new(
             PASTE_IMAGE_BINDING_NAME,
@@ -1587,6 +1571,9 @@ impl TuiTerminalSessionView {
             ctx.notify();
         });
         ctx.subscribe_to_model(&suggestions_mode, |_, _, _, ctx| ctx.notify());
+        ctx.subscribe_to_model(&TuiVoiceSettings::handle(ctx), |_, _, _, ctx| {
+            ctx.notify();
+        });
         // The warping indicator between the transcript and the input box
         // tracks the selected conversation: re-render when its status changes
         // or an exchange starts (the elapsed counter's anchor) on this
@@ -1771,6 +1758,7 @@ impl TuiTerminalSessionView {
             git_repo_status: None,
             terminal_surface_id,
             exit_confirmation: ExitConfirmation::default(),
+            voice_hold_active: None,
             usage_toggle: UsageToggle::default(),
             hidden_response_summary_exchange_ids: HashSet::new(),
             model_label_hover: MouseStateHandle::default(),
@@ -2684,9 +2672,12 @@ impl TuiTerminalSessionView {
         }
         match self.input_view.as_ref(ctx).voice_state(ctx) {
             TuiVoiceInputState::Listening => {
-                return Some(FooterHint::voice_input(
-                    "listening to voice input... · esc or enter to stop",
-                ));
+                let hint = if self.voice_hold_active.is_some() {
+                    "listening to voice input... · release key to stop"
+                } else {
+                    "listening to voice input... · esc or enter to stop"
+                };
+                return Some(FooterHint::voice_input(hint));
             }
             TuiVoiceInputState::Transcribing => {
                 return Some(FooterHint::voice_input("Transcribing... · esc to cancel"));
@@ -3060,8 +3051,68 @@ impl TuiTerminalSessionView {
         }
     }
 
+    fn with_voice_hold_handler(
+        &self,
+        child: Box<dyn TuiElement>,
+        composer_owns_input: bool,
+        ctx: &AppContext,
+    ) -> Box<dyn TuiElement> {
+        if !self.keyboard_enhancement_supported
+            || (!composer_owns_input && self.voice_hold_active.is_none())
+        {
+            return child;
+        }
+        let configured_key: Option<KeyCode> =
+            (*TuiVoiceSettings::as_ref(ctx).voice_input_hold_key.value()).into();
+        let Some(expected_key) = self.voice_hold_active.or(configured_key) else {
+            return child;
+        };
+        TuiEventHandler::new(child)
+            .on_key_event(move |event, event_ctx, _| {
+                let (key, state) = match event {
+                    TuiEvent::KeyDown {
+                        details,
+                        is_repeat: false,
+                        ..
+                    } => (details.physical_key, KeyState::Pressed),
+                    TuiEvent::KeyUp { details, .. } => (details.physical_key, KeyState::Released),
+                    TuiEvent::KeyDown {
+                        is_repeat: true, ..
+                    }
+                    | TuiEvent::Paste { .. }
+                    | TuiEvent::ScrollWheel { .. }
+                    | TuiEvent::LeftMouseDown { .. }
+                    | TuiEvent::LeftMouseUp { .. }
+                    | TuiEvent::LeftMouseDragged { .. }
+                    | TuiEvent::MiddleMouseDown { .. }
+                    | TuiEvent::RightMouseDown { .. }
+                    | TuiEvent::MouseMoved { .. } => {
+                        return TuiDispatchEventResult::PropagateToParent;
+                    }
+                };
+                let Some(key) = key else {
+                    return TuiDispatchEventResult::PropagateToParent;
+                };
+                if key != expected_key
+                    || (matches!(state, KeyState::Pressed) && !composer_owns_input)
+                {
+                    return TuiDispatchEventResult::PropagateToParent;
+                }
+                event_ctx.dispatch_typed_action(TuiTerminalSessionAction::ToggleVoiceInput {
+                    key,
+                    state,
+                });
+                TuiDispatchEventResult::StopPropagation
+            })
+            .finish()
+    }
+
     /// Asks the input-owned voice model to start recording.
-    fn start_voice_input(&mut self, source: VoiceInputStartSource, ctx: &mut ViewContext<Self>) {
+    fn start_voice_input(
+        &mut self,
+        source: VoiceInputStartSource,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let local_skills_available = self
             .slash_commands_source
             .as_ref(ctx)
@@ -3074,6 +3125,26 @@ impl TuiTerminalSessionView {
         });
         if started && matches!(source, VoiceInputStartSource::SlashCommand) {
             record_static_slash_command_accepted("/voice", true, ctx);
+        }
+        started
+    }
+
+    fn toggle_voice_input(&mut self, key: KeyCode, state: KeyState, ctx: &mut ViewContext<Self>) {
+        match state {
+            KeyState::Pressed => {
+                if self.voice_hold_active.is_none()
+                    && self.start_voice_input(VoiceInputStartSource::Keybinding, ctx)
+                {
+                    self.voice_hold_active = Some(key);
+                }
+            }
+            KeyState::Released => {
+                if self.voice_hold_active == Some(key) {
+                    self.voice_hold_active = None;
+                    self.input_view
+                        .update(ctx, |input, ctx| input.stop_voice_input(ctx));
+                }
+            }
         }
     }
 
@@ -3096,7 +3167,10 @@ impl TuiTerminalSessionView {
             TuiVoiceInputEvent::Cancelled => {
                 self.show_transient_hint("Voice input cancelled".to_owned(), ctx);
             }
-            TuiVoiceInputEvent::StateChanged(_) => {
+            TuiVoiceInputEvent::StateChanged(state) => {
+                if *state != TuiVoiceInputState::Listening {
+                    self.voice_hold_active = None;
+                }
                 ctx.notify();
             }
         }
@@ -3864,7 +3938,7 @@ impl TuiView for TuiTerminalSessionView {
             }
 
             let session = content.finish();
-            return if orchestration_tabs_available {
+            let session = if orchestration_tabs_available {
                 TuiFlex::column()
                     .child(TuiChildView::new(&self.orchestration_tab_bar).finish())
                     .flex_child(session)
@@ -3872,6 +3946,7 @@ impl TuiView for TuiTerminalSessionView {
             } else {
                 session
             };
+            return self.with_voice_hold_handler(session, state.composer_owns_input(), ctx);
         }
 
         // Ctrl-c (cancel/clear/exit) is handled by the keymap pass via the
@@ -4020,14 +4095,15 @@ impl TuiView for TuiTerminalSessionView {
             .with_padding_top(2)
             .with_padding_bottom(1)
             .finish();
-        if orchestration_tabs_available {
+        let session = if orchestration_tabs_available {
             TuiFlex::column()
                 .child(TuiChildView::new(&self.orchestration_tab_bar).finish())
                 .flex_child(session)
                 .finish()
         } else {
             session
-        }
+        };
+        self.with_voice_hold_handler(session, state.composer_owns_input(), ctx)
     }
 }
 
@@ -4120,6 +4196,9 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::StartVoiceInput => {
                 self.start_voice_input(VoiceInputStartSource::Keybinding, ctx);
+            }
+            TuiTerminalSessionAction::ToggleVoiceInput { key, state } => {
+                self.toggle_voice_input(*key, *state, ctx);
             }
         }
     }
