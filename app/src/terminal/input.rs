@@ -157,8 +157,6 @@ use crate::ai::agent_conversations_model::{
 use crate::ai::ambient_agents::telemetry::HandoffEntryPoint;
 use crate::ai::attachment_utils::MAX_ATTACHMENT_SIZE_BYTES;
 use crate::ai::block_context::BlockContext;
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::agent_view::agent_input_footer::sort_environments_by_recency;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController, AgentViewEntryOrigin,
@@ -168,11 +166,9 @@ use crate::ai::blocklist::block::cli_controller::{CLISubagentController, CLISuba
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::conversation_selection::ConversationSelectionHandle;
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::handoff::touched_repos::{
-    TouchedWorkspace, pick_handoff_overlap_env, resolve_repo_for_path,
+use crate::ai::blocklist::handoff::{
+    HandoffLaunchAttachments, PendingCloudLaunch, suggest_handoff_environment,
 };
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::handoff::{HandoffLaunchAttachments, PendingCloudLaunch};
 use crate::ai::blocklist::prompt::prompt_alert::{PromptAlertEvent, PromptAlertView};
 use crate::ai::blocklist::telemetry_banner::should_collect_ai_ugc_telemetry;
 use crate::ai::blocklist::{
@@ -4295,29 +4291,19 @@ impl Input {
         };
 
         let handoff_compose_state = self.handoff_compose_state.clone();
+        let suggestion = suggest_handoff_environment(pwd, ctx);
         ctx.spawn(
             async move {
-                resolve_repo_for_path(&pwd)
+                suggestion
                     .with_timeout(Duration::from_secs(5))
                     .await
                     .ok()
                     .flatten()
             },
-            move |_input, touched_repo, ctx| {
-                use crate::cloud_object::CloudObjectLookup as _;
-
-                let Some(touched_repo) = touched_repo else {
-                    return;
-                };
-                let workspace = TouchedWorkspace {
-                    repos: vec![touched_repo],
-                    orphan_files: vec![],
-                };
-                let mut envs = CloudAmbientAgentEnvironment::get_all(ctx);
-                sort_environments_by_recency(&mut envs);
-                if let Some(overlap_env) = pick_handoff_overlap_env(&workspace, envs) {
+            move |_input, environment_id, ctx| {
+                if let Some(environment_id) = environment_id {
                     handoff_compose_state.update(ctx, |state, ctx| {
-                        state.set_environment_id(Some(overlap_env), false, ctx);
+                        state.set_environment_id(Some(environment_id), false, ctx);
                     });
                 }
             },
