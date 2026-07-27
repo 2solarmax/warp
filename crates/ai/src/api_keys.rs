@@ -32,7 +32,17 @@ pub enum ApiKeyManagerEvent {
 ///
 /// These are used for "Bring Your Own API Key" functionality, allowing
 /// users to use their own API keys instead of Warp's.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
 #[serde(default)]
 pub struct ApiKeys {
     pub google: Option<String>,
@@ -42,7 +52,17 @@ pub struct ApiKeys {
     pub custom_endpoints: Vec<CustomEndpoint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
 #[serde(default)]
 pub struct CustomEndpoint {
     pub name: String,
@@ -53,7 +73,18 @@ pub struct CustomEndpoint {
 }
 
 /// The request/response protocol used by a custom inference endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CustomEndpointSchema {
     /// OpenAI Chat Completions, retained as the legacy/default protocol.
@@ -97,7 +128,17 @@ impl CustomEndpointSchema {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
 #[serde(default)]
 pub struct CustomEndpointModel {
     pub name: String,
@@ -284,6 +325,19 @@ impl ApiKeyManager {
 
     pub fn keys(&self) -> &ApiKeys {
         &self.keys
+    }
+
+    /// Replaces the in-memory keys loaded from a file-backed settings surface.
+    ///
+    /// Unlike the provider-specific setters, this deliberately does not write
+    /// to secure storage: the TUI owns its file-backed settings and must remain
+    /// isolated from the GUI's secure-storage namespace.
+    pub fn set_keys_from_settings(&mut self, keys: ApiKeys, ctx: &mut ModelContext<Self>) {
+        if self.keys == keys {
+            return;
+        }
+        self.keys = keys;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
     }
 
     /// The currently stored xAI/Grok OAuth tokens, if the user has connected a

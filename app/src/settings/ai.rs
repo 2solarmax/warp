@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ai::api_keys::ApiKeys;
 use chrono::{DateTime, Utc};
 pub use cloud_object_models::{
     AgentModeCommandExecutionPredicate, DEFAULT_COMMAND_EXECUTION_ALLOWLIST,
@@ -1324,6 +1325,20 @@ define_settings_group!(AISettings, settings: [
     //
     // TUI-only and file-backed so the choice persists across TUI sessions.
     usage_display_mode: TuiUsageDisplayMode,
+    // Provider API keys and custom endpoints for the headless TUI. This is
+    // intentionally public/file-backed and TUI-only: the TUI must have its own
+    // configuration path without importing the GUI's secure-storage namespace.
+    tui_api_keys: TuiApiKeys {
+        type: ApiKeys,
+        default: ApiKeys::default(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::TUI,
+        private: false,
+        toml_path: "agents.tui.api_keys",
+        max_table_depth: 1,
+        description: "Provider API keys and custom endpoints used by Warp Agent CLI.",
+    },
     // Whether or not the profile-level command autoexecution speedbump has been shown.
     //
     // Not a user-visible setting - we model it as a setting so we can track how often
