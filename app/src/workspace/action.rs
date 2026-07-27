@@ -953,8 +953,6 @@ impl WorkspaceAction {
             | CloseTabsRightActiveTab
             | CloseTabGroup(_)
             | ToggleTabGroupCollapsed(_)
-            | CollapseAllTabGroups
-            | ExpandAllTabGroups
             | RenameTabGroup(_)
             | NewTabGroupFromTab(_)
             | MoveTabToGroup { .. }
@@ -1205,6 +1203,13 @@ impl WorkspaceAction {
             | ShowCloudModeV2EnvironmentCreationModal
             | OpenCreateAuthSecretModal { .. }
             | OpenNetworkLogPane => false,
+            // Deliberately `false`, unlike the per-group `ToggleTabGroupCollapsed`
+            // above. The generic dispatcher saves whenever this returns `true`,
+            // and `Workspace::set_all_tab_groups_collapsed` already saves itself,
+            // guarded on something having actually changed. Returning `true` here
+            // would save the whole app twice per invocation, and would also save
+            // when the command was a no-op.
+            CollapseAllTabGroups | ExpandAllTabGroups => false,
             #[cfg(debug_assertions)]
             ShowHoaOnboardingFlow => false,
             #[cfg(target_family = "wasm")]

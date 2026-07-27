@@ -17,6 +17,17 @@ fn vertical_tabs_view_mode_change_does_not_save_workspace_state() {
 }
 
 #[test]
+fn bulk_tab_group_collapse_does_not_double_save_workspace_state() {
+    // `Workspace::set_all_tab_groups_collapsed` dispatches `workspace:save_app`
+    // itself, guarded on something having actually changed. The generic
+    // dispatcher saves again whenever this returns `true`, so returning `true`
+    // here would snapshot the whole app twice per invocation and would also
+    // save when the command was a no-op. Keep these `false`.
+    assert!(!WorkspaceAction::CollapseAllTabGroups.should_save_app_state_on_action());
+    assert!(!WorkspaceAction::ExpandAllTabGroups.should_save_app_state_on_action());
+}
+
+#[test]
 fn vertical_tabs_panel_toggle_still_saves_workspace_state() {
     assert!(WorkspaceAction::ToggleVerticalTabsPanel.should_save_app_state_on_action());
 }
