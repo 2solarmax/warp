@@ -4104,6 +4104,189 @@ fn test_toggle_tab_group_collapsed_flips_state() {
     });
 }
 
+/// Builds a workspace with three single-tab groups plus one ungrouped tab,
+/// and returns the group ids in tab order.
+#[cfg(test)]
+fn seed_three_groups(
+    workspace: &mut Workspace,
+    ctx: &mut ViewContext<Workspace>,
+) -> Vec<TabGroupId> {
+    // Starts with one tab; add three more.
+    workspace.add_terminal_tab(false, ctx);
+    workspace.add_terminal_tab(false, ctx);
+    workspace.add_terminal_tab(false, ctx);
+    assert_eq!(workspace.tab_count(), 4);
+
+    let mut group_ids = vec![];
+    for index in 0..3 {
+        let group = TabGroup::new();
+        let group_id = group.id;
+        workspace.tab_groups.insert(group_id, group);
+        workspace.tabs[index].group_id = Some(group_id);
+        group_ids.push(group_id);
+    }
+    // Tab 3 stays ungrouped.
+    assert!(workspace.tabs[3].group_id.is_none());
+    group_ids
+}
+
+#[test]
+fn test_collapse_all_tab_groups_collapses_every_group_from_mixed_state() {
+    // The point of two explicit commands rather than one toggle: from a mixed
+    // state the result is the requested state for every group, not a per-group
+    // inversion.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let group_ids = seed_three_groups(workspace, ctx);
+
+            // Mixed: collapse only the middle group.
+            workspace.tab_groups.get_mut(&group_ids[1]).unwrap().collapsed = true;
+
+            workspace.handle_action(&WorkspaceAction::CollapseAllTabGroups, ctx);
+
+            for group_id in &group_ids {
+                assert!(
+                    workspace.tab_groups[group_id].collapsed,
+                    "every group should be collapsed"
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn test_expand_all_tab_groups_expands_every_group_from_mixed_state() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let group_ids = seed_three_groups(workspace, ctx);
+
+            // Mixed: collapse two of the three.
+            workspace.tab_groups.get_mut(&group_ids[0]).unwrap().collapsed = true;
+            workspace.tab_groups.get_mut(&group_ids[2]).unwrap().collapsed = true;
+
+            workspace.handle_action(&WorkspaceAction::ExpandAllTabGroups, ctx);
+
+            for group_id in &group_ids {
+                assert!(
+                    !workspace.tab_groups[group_id].collapsed,
+                    "every group should be expanded"
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn test_collapse_all_tab_groups_is_idempotent() {
+    // Running the same command twice must not invert anything - the guard
+    // against reintroducing toggle semantics by accident.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let group_ids = seed_three_groups(workspace, ctx);
+
+            workspace.handle_action(&WorkspaceAction::CollapseAllTabGroups, ctx);
+            workspace.handle_action(&WorkspaceAction::CollapseAllTabGroups, ctx);
+
+            for group_id in &group_ids {
+                assert!(workspace.tab_groups[group_id].collapsed);
+            }
+        });
+    });
+}
+
+#[test]
+fn test_collapse_all_tab_groups_preserves_membership_and_order() {
+    // Collapsing is a view-state change only: it must not move tabs, change
+    // group membership, or drop a group.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let group_ids = seed_three_groups(workspace, ctx);
+
+            let order_before: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            let membership_before: Vec<_> =
+                workspace.tabs.iter().map(|tab| tab.group_id).collect();
+            let active_before = workspace.active_tab_index();
+
+            workspace.handle_action(&WorkspaceAction::CollapseAllTabGroups, ctx);
+
+            let order_after: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            let membership_after: Vec<_> =
+                workspace.tabs.iter().map(|tab| tab.group_id).collect();
+
+            assert_eq!(order_before, order_after, "tab order must not change");
+            assert_eq!(
+                membership_before, membership_after,
+                "group membership must not change"
+            );
+            assert_eq!(
+                active_before,
+                workspace.active_tab_index(),
+                "active tab must not change"
+            );
+            assert_eq!(workspace.tab_groups.len(), group_ids.len());
+            // The ungrouped tab is still ungrouped.
+            assert!(workspace.tabs[3].group_id.is_none());
+        });
+    });
+}
+
+#[test]
+fn test_has_tab_groups_keymap_context_tracks_group_presence() {
+    // The bulk commands are gated on `Workspace_HasTabGroups` so they stay out
+    // of the command palette when there is nothing to collapse.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(
+                !workspace.keymap_context(ctx).set.contains("Workspace_HasTabGroups"),
+                "no groups yet, so the bulk commands should be unavailable"
+            );
+
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+
+            assert!(
+                workspace.keymap_context(ctx).set.contains("Workspace_HasTabGroups"),
+                "a group exists, so the bulk commands should be available"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_close_tab_group_removes_group_and_members() {
     let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);

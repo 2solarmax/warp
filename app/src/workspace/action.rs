@@ -184,6 +184,12 @@ pub enum WorkspaceAction {
     CloseTabGroup(TabGroupId),
     /// Toggle collapsed state for the given tab group.
     ToggleTabGroupCollapsed(TabGroupId),
+    /// Collapses every tab group in the window. No-op when they are all
+    /// already collapsed.
+    CollapseAllTabGroups,
+    /// Expands every tab group in the window. No-op when they are all
+    /// already expanded.
+    ExpandAllTabGroups,
     /// Opens an inline editor over the given group's header for renaming.
     RenameTabGroup(TabGroupId),
     /// Cancels any active rename (tab, pane, or group) without committing the
@@ -947,6 +953,8 @@ impl WorkspaceAction {
             | CloseTabsRightActiveTab
             | CloseTabGroup(_)
             | ToggleTabGroupCollapsed(_)
+            | CollapseAllTabGroups
+            | ExpandAllTabGroups
             | RenameTabGroup(_)
             | NewTabGroupFromTab(_)
             | MoveTabToGroup { .. }

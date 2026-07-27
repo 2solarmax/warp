@@ -1061,6 +1061,31 @@ pub fn init(app: &mut AppContext) {
                 & id!("Workspace_ActiveTabGroupPinned")
                 & !id!("Workspace_PaneDragging"),
         ),
+        // Bulk collapse/expand. Two explicit commands rather than one toggle:
+        // with groups in mixed states a toggle has to pick a winner, which is
+        // unpredictable from the user's side. Both are gated on
+        // `Workspace_HasTabGroups` so they stay out of the palette entirely
+        // when the window has no groups to act on.
+        EditableBinding::new(
+            "workspace:collapse_all_tab_groups",
+            "Collapse all tab groups",
+            WorkspaceAction::CollapseAllTabGroups,
+        )
+        .with_enabled(|| FeatureFlag::GroupedTabs.is_enabled())
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_context_predicate(
+            id!("Workspace") & id!("Workspace_HasTabGroups") & !id!("Workspace_PaneDragging"),
+        ),
+        EditableBinding::new(
+            "workspace:expand_all_tab_groups",
+            "Expand all tab groups",
+            WorkspaceAction::ExpandAllTabGroups,
+        )
+        .with_enabled(|| FeatureFlag::GroupedTabs.is_enabled())
+        .with_group(bindings::BindingGroup::Navigation.as_str())
+        .with_context_predicate(
+            id!("Workspace") & id!("Workspace_HasTabGroups") & !id!("Workspace_PaneDragging"),
+        ),
     ]);
 
     app.register_editable_bindings([

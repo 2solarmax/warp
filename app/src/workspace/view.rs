@@ -7146,6 +7146,36 @@ impl Workspace {
         }
     }
 
+    /// Sets the collapsed state of every tab group in this window at once.
+    ///
+    /// Layout-agnostic on purpose: both the horizontal tab bar and the
+    /// vertical tabs panel render from `TabGroup::collapsed`, so setting the
+    /// flag here is all either one needs. Writes the field directly rather
+    /// than looping [`Self::toggle_tab_group_collapsed`] so that mixed states
+    /// converge on the requested value instead of inverting per group, and so
+    /// the save + repaint happen once rather than once per group.
+    ///
+    /// No-op when every group already matches `collapsed`, so a redundant
+    /// invocation costs neither a save nor a repaint.
+    pub fn set_all_tab_groups_collapsed(
+        &mut self,
+        collapsed: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut changed = false;
+        for group in self.tab_groups.values_mut() {
+            if group.collapsed != collapsed {
+                group.collapsed = collapsed;
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        ctx.dispatch_global_action("workspace:save_app", ());
+        ctx.notify();
+    }
+
     /// Ensures the group is expanded (not collapsed). No-op if the group does
     /// not exist or is already expanded.
     fn expand_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
@@ -9924,6 +9954,33 @@ impl Workspace {
             items
         };
 
+        // Bulk collapse/expand. Offered from any group header because it acts
+        // on the whole window, not on `group_id`. Each entry is hidden when it
+        // would be a no-op, matching how the move entries above are hidden —
+        // so a window whose groups are all collapsed only offers "Expand all
+        // groups". Needs 2+ groups to be worth showing at all; with a single
+        // group the header click already does the job.
+        let collapse_all_section = if self.tab_groups.len() > 1 {
+            let mut items = vec![];
+            if self.tab_groups.values().any(|group| !group.collapsed) {
+                items.push(
+                    MenuItemFields::new("Collapse all groups")
+                        .with_on_select_action(WorkspaceAction::CollapseAllTabGroups)
+                        .into_item(),
+                );
+            }
+            if self.tab_groups.values().any(|group| group.collapsed) {
+                items.push(
+                    MenuItemFields::new("Expand all groups")
+                        .with_on_select_action(WorkspaceAction::ExpandAllTabGroups)
+                        .into_item(),
+                );
+            }
+            items
+        } else {
+            vec![]
+        };
+
         let pin_section = if FeatureFlag::PinnedTabs.is_enabled() {
             let (label, action) = if self.tab_groups.get(&group_id).is_some_and(|g| g.pinned) {
                 ("Unpin group", WorkspaceAction::UnpinTabGroup(group_id))
@@ -9965,6 +10022,7 @@ impl Workspace {
                     .into_item(),
             ],
             move_section,
+            collapse_all_section,
             vec![
                 MenuItemFields::new("Rename")
                     .with_on_select_action(WorkspaceAction::RenameTabGroup(group_id))
@@ -23736,6 +23794,8 @@ impl TypedActionView for Workspace {
             }
             CloseTabGroup(group_id) => self.close_tab_group(*group_id, ctx),
             ToggleTabGroupCollapsed(group_id) => self.toggle_tab_group_collapsed(*group_id, ctx),
+            CollapseAllTabGroups => self.set_all_tab_groups_collapsed(true, ctx),
+            ExpandAllTabGroups => self.set_all_tab_groups_collapsed(false, ctx),
             RenameTabGroup(group_id) => self.rename_tab_group(*group_id, ctx),
             CancelActiveRename => {
                 self.cancel_tab_rename(ctx);
@@ -26135,6 +26195,13 @@ impl View for Workspace {
                 }
             }
         };
+
+        // Window-level rather than active-tab-level: the bulk collapse/expand
+        // commands act on every group, so they're meaningful whenever the
+        // window has at least one group, regardless of which tab is active.
+        if !self.tab_groups.is_empty() {
+            context.set.insert("Workspace_HasTabGroups");
+        }
 
         // Surface the active tab's group/pin state to the keymap so the
         // tab-grouping/pinning bindings can gate themselves to the contexts
